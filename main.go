@@ -180,6 +180,38 @@ func (s *Server) Run() error {
 	return http.ListenAndServe(addr, nil)
 }
 
+// printUsage 打印帮助信息
+func printUsage() {
+	fmt.Println(`cmd_exec - AI Agent Command Execution Tool
+
+Usage:
+  cmd_exec [options]
+
+Modes:
+  CLI Mode (default): Read JSON from stdin, execute command, output JSON result
+  Server Mode (-server): Start HTTP server for remote command execution
+
+Options:
+  -h, -help       Show this help message
+  -server         Run in HTTP server mode
+  -port int       HTTP server port (default: 8080)
+  -max-processes  Maximum number of background processes (default: 100)
+
+Examples:
+  # CLI Mode - execute command from stdin
+  echo '{"command": "echo hello"}' | cmd_exec
+
+  # Server Mode - start HTTP server on port 8080
+  cmd_exec -server -port 8080
+
+API Endpoints (Server Mode):
+  POST   /exec              Execute command
+  GET    /process/{pid}     Get process status
+  GET    /process/{pid}/logs Get process logs
+  DELETE /process/{pid}     Terminate process
+  GET    /health            Health check`)
+}
+
 // CLI 模式：直接执行命令并输出结果
 func runCLI() error {
 	// 从 stdin 读取 JSON 请求
@@ -207,7 +239,15 @@ func main() {
 	serverMode := flag.Bool("server", false, "run in HTTP server mode")
 	port := flag.Int("port", DefaultHTTPPort, "HTTP server port")
 	maxProcesses := flag.Int("max-processes", 100, "maximum number of background processes")
+	help := flag.Bool("help", false, "show help message")
+	helpShort := flag.Bool("h", false, "show help message")
 	flag.Parse()
+
+	// 检测帮助参数
+	if *help || *helpShort {
+		printUsage()
+		return
+	}
 
 	// 设置信号处理
 	sigChan := make(chan os.Signal, 1)
