@@ -8,6 +8,17 @@ import (
 	"syscall"
 )
 
+// setupProcessGroupWindows 在 Unix 上是空操作（为了编译通过）
+func (b *PlatformCommandBuilder) setupProcessGroupWindows(cmd *exec.Cmd) {
+	// Unix 不使用此方法
+}
+
+// killWindowsProcess 在 Unix 上是空操作（为了编译通过）
+func killWindowsProcess(cmd *exec.Cmd) error {
+	// Unix 不使用此方法
+	return nil
+}
+
 // setupProcessGroupUnix 设置 Unix 进程组
 func (b *PlatformCommandBuilder) setupProcessGroupUnix(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
