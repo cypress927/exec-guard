@@ -1,8 +1,584 @@
-# cmd_exec - AI Agent 命令执行模块
+# exec-guard - AI Agent Command Execution Module
+
+[中文文档](#中文文档)
+
+## Overview
+
+**exec-guard** is an infrastructure module that provides safe and reliable system command execution capabilities for AI Agents. It addresses the core challenges AI Agents face when executing system commands:
+
+- **Timeout Control**: Prevents resource occupation from infinite command execution
+- **Memory Protection**: Prevents memory overflow from large outputs (Head-Tail Ring Buffer)
+- **Process Management**: Supports background process startup, monitoring, and termination
+- **Cross-Platform Compatibility**: Unified interface for Windows/Linux/macOS
+
+---
+
+## Features
+
+### Core Capabilities
+
+| Feature | Description |
+|---------|-------------|
+| Synchronous Execution | Execute commands and wait for results with timeout control |
+| Background Execution | Start background processes with status query and log retrieval |
+| Watch Window | Observe for N seconds after background startup to determine success |
+| Dual-End Buffer | Head-Tail ring buffer, max 8KB, prevents OOM |
+| Environment Variables | Inherits host environment variables with custom overrides |
+| Process Group Management | Terminates all child processes when killing a process |
+
+### Running Modes
+
+- **CLI Mode**: Reads JSON requests from stdin, outputs JSON responses
+- **HTTP Service Mode**: Provides RESTful API for remote invocation
+
+---
+
+## Installation & Build
+
+### Requirements
+
+- Go 1.20+
+
+### Build Commands
+
+```bash
+# Windows
+go build -o cmd_exec.exe
+
+# Linux/macOS
+go build -o cmd_exec
+
+# Cross-compile Linux amd64 (on Windows)
+set GOOS=linux&& set GOARCH=amd64&& go build -ldflags=-s -ldflags=-w -o cmd_exec_linux .
+
+# Cross-compile Windows (on Linux)
+GOOS=windows GOARCH=amd64 go build -o cmd_exec.exe .
+```
+
+### Run Tests
+
+```bash
+go test ./... -v
+```
+
+---
+
+## Usage
+
+### CLI Mode
+
+Reads JSON requests from stdin, executes commands and outputs JSON responses:
+
+```bash
+# Basic usage
+echo '{"command": "echo hello"}' | ./cmd_exec
+
+# With timeout
+echo '{"command": "sleep 5", "timeout_seconds": 3}' | ./cmd_exec
+
+# Background execution
+echo '{"command": "long_task", "run_in_background": true}' | ./cmd_exec
+
+# Custom environment variables
+echo '{"command": "node app.js", "env": {"NODE_ENV": "production"}}' | ./cmd_exec
+```
+
+### HTTP Service Mode
+
+Starts an HTTP server providing RESTful API:
+
+```bash
+# Default port 8080
+./cmd_exec -server
+
+# Custom port
+./cmd_exec -server -port 9000
+
+# Limit max background processes
+./cmd_exec -server -port 8080 -max-processes 50
+```
+
+---
+
+## API Documentation
+
+### Execute Command
+
+**POST** `/exec`
+
+Executes system commands, supporting both synchronous and background modes.
+
+#### Request Parameters
+
+```json
+{
+  "command": "string, required - system command to execute",
+  "working_dir": "string, optional - working directory, defaults to current directory",
+  "timeout_seconds": "number, optional - timeout in seconds, default 30",
+  "run_in_background": "boolean, optional - run in background, default false",
+  "watch_duration_seconds": "number, optional - watch window duration in seconds, background mode only",
+  "env": "object, optional - custom environment variables"
+}
+```
+
+#### Response Structure
+
+```json
+{
+  "status": "string - success/failed/timeout/killed/running",
+  "exit_code": "number - process exit code, -1 for exception or running",
+  "stdout": "string - standard output (Head-Tail dual-end buffer)",
+  "stderr": "string - standard error (Head-Tail dual-end buffer)",
+  "system_message": "string - system message/error details"
+}
+```
+
+#### Examples
+
+**Synchronous Execution**
+
+```bash
+curl -X POST http://localhost:8080/exec \
+  -H "Content-Type: application/json" \
+  -d '{"command": "ls -la", "timeout_seconds": 10}'
+```
+
+Response:
+```json
+{
+  "status": "success",
+  "exit_code": 0,
+  "stdout": "total 32\n...",
+  "stderr": "",
+  "system_message": "command executed successfully"
+}
+```
+
+**Background Execution**
+
+```bash
+curl -X POST http://localhost:8080/exec \
+  -H "Content-Type: application/json" \
+  -d '{"command": "python train.py", "run_in_background": true}'
+```
+
+Response:
+```json
+{
+  "status": "running",
+  "exit_code": -1,
+  "stdout": "",
+  "stderr": "",
+  "system_message": "process started with PID 12345"
+}
+```
+
+**Watch Window Mode**
+
+```bash
+curl -X POST http://localhost:8080/exec \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "java -jar app.jar",
+    "run_in_background": true,
+    "watch_duration_seconds": 5
+  }'
+```
+
+- If process exits within 5 seconds → returns `status: "failed"` + exit code + output
+- If process still running after 5 seconds → returns `status: "running"` + initialization logs
+
+---
+
+### Query Process Status
+
+**GET** `/process/{pid}`
+
+Queries the current status of a background process.
+
+#### Response Structure
+
+```json
+{
+  "pid": 12345,
+  "status": "running/completed/failed",
+  "exit_code": 0,
+  "command": "python train.py",
+  "start_time": "2024-01-15T10:30:00Z",
+  "end_time": "",
+  "watch_duration_seconds": 0,
+  "watch_completed": false
+}
+```
+
+#### Example
+
+```bash
+curl http://localhost:8080/process/12345
+```
+
+---
+
+### Get Process Logs
+
+**GET** `/process/{pid}/logs`
+
+Gets complete information about a background process, including output logs.
+
+#### Response Structure
+
+```json
+{
+  "pid": 12345,
+  "status": "running",
+  "exit_code": -1,
+  "command": "python train.py",
+  "start_time": "2024-01-15T10:30:00Z",
+  "stdout": "Training started...\nEpoch 1: loss=0.5",
+  "stderr": ""
+}
+```
+
+#### Example
+
+```bash
+curl http://localhost:8080/process/12345/logs
+```
+
+---
+
+### Terminate Process
+
+**DELETE** `/process/{pid}`
+
+Terminates the specified background process and all its child processes.
+
+#### Response Structure
+
+```json
+{
+  "status": "success",
+  "message": "process 12345 terminated"
+}
+```
+
+#### Example
+
+```bash
+curl -X DELETE http://localhost:8080/process/12345
+```
+
+---
+
+### Health Check
+
+**GET** `/health`
+
+Checks if the service is running normally.
+
+#### Response Structure
+
+```json
+{
+  "status": "healthy"
+}
+```
+
+---
+
+## Core Design Details
+
+### Head-Tail Ring Buffer
+
+**Problem Background**: Some programs produce infinite log output (e.g., Java exception stack traces), and reading all at once causes memory overflow.
+
+**Solution**: Use Head-Tail dual-end buffering strategy, strictly limiting memory usage to ≤ 8KB.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                Dual-End Buffer Structure (Max 8KB)           │
+├──────────────────┬─────────────────────┬───────────────────┤
+│   Head Buffer    │   Discarded Area    │   Tail Buffer     │
+│   (First 4KB)    │   (Middle Data)     │   (Last 4KB)      │
+│                  │                     │                   │
+│  Root Cause      │   Auto-discarded    │   Latest State    │
+│  Evidence        │                     │                   │
+└──────────────────┴─────────────────────┴───────────────────┘
+```
+
+**Design Principles**:
+
+| Region | Size | Purpose |
+|--------|------|---------|
+| Head Buffer | 4KB fixed | Preserves initial output at program startup for root cause diagnosis |
+| Tail Buffer | 4KB ring | Circular overwrite preserves latest output for current state monitoring |
+| Middle Data | Auto-discarded | Does not occupy memory, auto-truncated when exceeding 8KB |
+
+**Truncation Notice**: When total output > 8KB, inserts at splice point:
+
+```
+... [TRUNCATED: 10240 bytes omitted] ...
+```
+
+---
+
+### Watch Window Mode (watch_duration_seconds)
+
+**Use Case**: When starting background services (e.g., Java applications, web servers), need to confirm successful startup.
+
+**Workflow**:
+
+```
+Process Start ──────────────┬──────────────────────> Time
+                             │
+                             ▼
+                  Wait watch_duration_seconds
+                             │
+               ┌─────────────┴─────────────┐
+               ▼                           ▼
+        Process Exited              Process Still Running
+               │                           │
+               ▼                           ▼
+      Return status: failed        Return status: running
+           exit_code: X                + initialization logs
+           + full output               Process continues in background
+```
+
+**Advantages**:
+
+- Avoids undetected startup failures
+- Captures initialization phase logs (e.g., startup errors, configuration issues)
+- Confirms service is running normally before returning
+
+---
+
+### Timeout Control & Process Group Management
+
+**Timeout Mechanism**:
+
+- Uses `context.WithTimeout` to set timeout
+- Thoroughly terminates process and all child processes after timeout
+
+**Process Group Management**:
+
+| Platform | Implementation |
+|----------|----------------|
+| Linux/macOS | `setpgid` creates process group, `kill(-pgid)` kills entire group |
+| Windows | `CREATE_NEW_PROCESS_GROUP` flag |
+
+**Purpose**: Prevents orphan process residue.
+
+---
+
+### Environment Variable Inheritance & Override
+
+**Default Behavior**: Child processes inherit all host environment variables (`os.Environ()`).
+
+**Override Rule**: Variables in the `env` object override host variables with the same name.
+
+```json
+{
+  "command": "node app.js",
+  "env": {
+    "NODE_ENV": "production",
+    "API_KEY": "secret123",
+    "PATH": "/usr/local/bin:/usr/bin"
+  }
+}
+```
+
+**Notes**:
+
+- Be cautious when overriding PATH, may cause basic commands to not be found
+- Recommend appending rather than completely replacing: `"PATH": "/custom/bin:$PATH"`
+
+---
+
+## Configuration Parameters
+
+### Constants
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `DefaultTimeoutSeconds` | 30 | Default timeout in seconds |
+| `MaxOutputBytes` | 8192 (8KB) | Maximum output bytes |
+| `TruncateHeadBytes` | 4096 (4KB) | Head buffer size |
+| `TruncateTailBytes` | 4096 (4KB) | Tail buffer size |
+| `DefaultHTTPPort` | 8080 | HTTP service default port |
+
+### Command Line Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `-server` | Start HTTP service mode | false |
+| `-port` | HTTP service port | 8080 |
+| `-max-processes` | Maximum background processes | 100 |
+| `-h, -help` | Show help information | - |
+
+---
+
+## Status Codes
+
+### Execution Status
+
+| Status | Description |
+|--------|-------------|
+| `success` | Command executed successfully, exit code 0 |
+| `failed` | Command execution failed, exit code non-zero |
+| `timeout` | Command execution timed out, process terminated |
+| `killed` | Process manually terminated |
+| `running` | Process running in background |
+
+### Process Status
+
+| Status | Description |
+|--------|-------------|
+| `running` | Process is running |
+| `completed` | Process completed normally |
+| `failed` | Process exited abnormally or was terminated |
+
+---
+
+## Error Handling
+
+### Predefined Errors
+
+| Error | Description |
+|-------|-------------|
+| `ErrEmptyCommand` | Empty command |
+| `ErrProcessNotFound` | Process not found |
+| `ErrTimeoutExceeded` | Execution timeout |
+| `ErrProcessAlreadyExists` | Process already exists (PID conflict) |
+| `ErrInvalidWorkingDir` | Invalid working directory |
+
+### HTTP Error Response
+
+```json
+{
+  "error": "process not found"
+}
+```
+
+| HTTP Status Code | Description |
+|------------------|-------------|
+| 400 | Request parameter error |
+| 404 | Process not found |
+| 405 | Method not allowed |
+| 500 | Internal error |
+
+---
+
+## Best Practices
+
+### 1. Choose the Right Execution Mode
+
+| Scenario | Recommended Mode |
+|----------|------------------|
+| Quick commands (ls, echo) | Synchronous execution |
+| Long-running tasks (model training) | Background execution |
+| Service startup (Web Server) | Background + Watch window |
+
+### 2. Set Reasonable Timeout
+
+```json
+{
+  "command": "npm install",
+  "timeout_seconds": 300  // 5 minutes, dependency installation may be slow
+}
+```
+
+### 3. Use Watch Window to Confirm Startup
+
+```json
+{
+  "command": "java -jar app.jar",
+  "run_in_background": true,
+  "watch_duration_seconds": 10  // Wait 10 seconds to confirm startup
+}
+```
+
+### 4. Periodically Clean Up Completed Processes
+
+```bash
+# Clean up via API (need to implement cleanup interface yourself)
+# Or set process limit to automatically reject new processes
+./cmd_exec -server -max-processes 50
+```
+
+### 5. Be Careful with Environment Variable Override
+
+```json
+{
+  "env": {
+    "NODE_ENV": "production",
+    "LOG_LEVEL": "info"
+    // Don't completely override PATH
+  }
+}
+```
+
+---
+
+## Cross-Platform Compatibility
+
+### Shell Command Wrapping
+
+| Platform | Wrapping Method |
+|----------|-----------------|
+| Windows | `cmd.exe /c <command>` |
+| Linux/macOS | `bash -c "<command>"` |
+
+### Process Termination Method
+
+| Platform | Implementation |
+|----------|----------------|
+| Windows | `CREATE_NEW_PROCESS_GROUP` + `Process.Kill()` |
+| Linux/macOS | `setpgid` + `kill(-pgid, SIGKILL)` |
+
+---
+
+## Project Structure
+
+```
+cmd_exec/
+├── main.go              # Program entry, CLI args, HTTP service
+├── types.go             # Input/output struct definitions
+├── constants.go         # Constant definitions
+├── ringbuf.go           # Dual-end ring buffer implementation
+├── stream.go            # Safe stream reader
+├── platform.go          # Cross-platform command building (common code)
+├── platform_unix.go     # Unix/Linux/macOS specific implementation
+├── platform_windows.go  # Windows specific implementation
+├── background.go        # Background process management
+├── executor.go          # Core execution logic
+├── go.mod               # Go module definition
+├── cmd_exec_test.go     # Unit tests
+├── README.md            # Documentation
+└── QWEN.md              # Project specification document
+```
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 0.2.0 | - | Added watch window mode, dual-end ring buffer |
+| 0.1.0 | - | Initial version, core functionality implementation |
+
+---
+
+## License
+
+MIT License
+
+---
+
+# 中文文档
 
 ## 项目概述
 
-**cmd_exec** 是一个为 AI Agent 提供安全、可靠系统命令执行能力的基础设施模块。它解决了 AI Agent 在执行系统命令时面临的核心挑战：
+**exec-guard** 是一个为 AI Agent 提供安全、可靠系统命令执行能力的基础设施模块。它解决了 AI Agent 在执行系统命令时面临的核心挑战：
 
 - **超时控制**：防止命令无限执行导致资源占用
 - **内存保护**：防止大输出导致内存溢出（双端环形缓冲）
